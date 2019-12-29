@@ -1,0 +1,319 @@
+---
+title: "Random Forest Analysis"
+author: "Abhishek, Jackson and Reynaldo"
+date: "5th December 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Reading the data
+
+```{r}
+#Change the filnames as per your need
+test_data <- read.csv("Features_TestSet.csv", header=F, sep =',')
+train_data <- read.csv("Features_Variant_1.csv", header=F, sep = ',')
+
+col_names <-
+  c(
+    'Page_Popularity',     'Page_Checkins',    'Page_Talking_About',
+    'Page_Category',    'Derived_1',     'Derived_2',    'Derived_3',
+    'Derived_4',    'Derived_5',    'Derived_6',    'Derived_7',
+    'Derived_8',    'Derived_9',    'Derived_10',     'Derived_11',
+    'Derived_12',    'Derived_13',    'Derived_14',    'Derived_15',
+    'Derived_16',    'Derived_17',    'Derived_18',    'Derived_19',
+    'Derived_20',    'Derived_21',    'Derived_22',    'Derived_23',
+    'Derived_24',    'Derived_25',    'CC1',    'CC2',
+    'CC3',    'CC4',    'CC5',    'Base_Time',
+    'Post_Length',     'Post_Share_Count',    'Post_Promotion_Status',     'H_Local',
+    'Post_Day_Sunday',    'Post_Day_Monday',    'Post_Day_Tuesday',    'Post_Day_Wednesday',
+    'Post_Day_Thursday',    'Post_Day_Friday',    'Post_Day_Saturday',    'Base_Day_Sunday',
+    'Base_Day_Monday',    'Base_Day_Tuesday',    'Base_Day_Wednesday',    'Base_Day_Thursday',
+    'Base_Day_Friday',    'Base_Day_Saturday',    'Target_Variable')
+
+colnames(test_data) <- col_names
+colnames(train_data) <- col_names
+
+
+#Condensing the Page Category
+page_category_group <- read.csv("page_category.csv", stringsAsFactors = FALSE, sep = '\t')
+
+train_data <- merge(train_data, page_category_group, by='Page_Category', all.x = TRUE)
+train_data$Page_Category <- as.factor(train_data$Group)
+train_data$Group <- NULL
+train_data <- train_data[, col_names]
+
+test_data <- merge(test_data, page_category_group, by='Page_Category', all.x = TRUE)
+test_data$Page_Category <- as.factor(test_data$Group)
+test_data$Group <- NULL
+test_data <- test_data[, col_names]
+
+
+#Converted the weekdays column to one column that tells if the post was made on a weekday
+
+train_data$Post_Day_Weekend <- as.factor(rowSums(train_data[, c(40,46)]))
+train_data$Base_Day_Weekend <- as.factor(rowSums(train_data[, c(47,53)]))
+
+test_data$Post_Day_Weekend <- as.factor(rowSums(test_data[, c(40,46)]))
+test_data$Base_Day_Weekend <- as.factor(rowSums(test_data[, c(47,53)]))
+
+train_data[, 40:53] <- NULL
+test_data[, 40:53] <- NULL
+
+
+#Dropping Post_promotion_Status as it contains only one type of data (means every post was promoted)
+train_data$Post_Promotion_Status <- NULL
+test_data$Post_Promotion_Status <- NULL
+
+#Rearranging columns to make the target the last column
+train_data <- train_data[ , c(1:38,40,41,39)]
+test_data <- test_data[ , c(1:38,40,41,39)]
+
+
+#Removing NA values
+train_data <- na.omit(train_data)
+test_data <- na.omit(test_data)
+
+```
+
+
+# Performing Random Forest regression
+
+```{r}
+library(randomForest)
+library(mlbench)
+library(caret)
+library(e1071)
+library(doParallel)
+```
+
+
+```{r}
+clusters <- makeCluster(detectCores()-2)
+registerDoParallel(clusters)
+
+rf_model <- randomForest(Target_Variable~., data = train_data, ntree = 50)
+
+stopCluster(clusters)
+
+print(rf_model)
+
+plot(rf_model, main = "Elbow plot for # of Trees")
+
+```
+
+# We see that after 20 trees there is hardly any benefit of runnging the algorithm so we use the number of trees to be 20. Now, we are going to tune the model for selection of best mtry parameter
+
+# Performing hyperparameter tuning for Random Forest model
+```{r}
+clusters <- makeCluster(detectCores()-2)
+registerDoParallel(clusters)
+
+
+set.seed(1)
+x_train_rf <- train_data[,1:40]
+y_train_rf <- train_data[,41]
+
+x_test_rf <- test_data[,1:40]
+y_test_rf <- test_data[,41]
+
+bestMtry <- tuneRF(x_train_rf,y_train_rf, stepFactor = 1.5, improve = 1e-4, ntree = 20)
+
+stopCluster(clusters)
+
+print(bestMtry)
+```
+
+# The plot  This tells us that after the value of mtree at 19 there is not much benefit to the model.
+
+# Moreover, the above two steps take huge amount of time to get optimized values of mtry and ntree. So, we will now use the mtry and ntree to be 20 and make our final Random Forest model.
+
+# Building the final Random Forests model with tuned hyperparameters.
+
+```{r}
+clusters <- makeCluster(detectCores()-2)
+registerDoParallel(clusters)
+
+rf_model_final <- randomForest(Target_Variable~., data = train_data, ntree = 20, mtry = 19)
+
+stopCluster(clusters)
+
+```
+
+
+
+```{r}
+
+y_train_rf_pred <- predict(rf_model_final, x_train_rf, type = 'response')
+
+rf_rmse_train <- sqrt(mean(y_train_rf_pred - y_train_rf)^2)
+cat('RMSE:', rf_rmse_train)
+```
+
+```{r}
+rf_resid <- y_train_rf_pred - y_train_rf
+resid_plot_data <- as.data.frame(cbind(rf_resid, y_train_rf)) 
+ggplot() +
+  aes(x = y_train_rf, y = rf_resid) +
+  geom_point() + 
+  xlab("Fitted Values") +
+  ylab("Residuals") + 
+  ggtitle("Residuals Plot")
+
+```
+
+
+```{r}
+#Plotting variable importance for our Random Forest model
+
+
+varImpPlot(rf_model_final)
+
+library(ggplot2)
+library(ggpmisc)
+
+ggplot() +
+  scale_x_continuous() + scale_y_continuous() +
+  aes(y = y_train_rf_pred, x = y_train_rf) +
+  geom_point() + geom_smooth(method = "lm") + xlab("Actual number of comments") + ylab("Predicted number of comments") +
+  geom_abline(slope = 1, intercept = 0) +
+  stat_poly_eq(
+    formula = y_train_rf_pred ~ y_train_rf,
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    parse = TRUE
+  ) +
+  coord_cartesian(ylim=c(0, max(c(y_train_rf, y_train_rf_pred))), xlim=c(0, max(c(y_train_rf, y_train_rf_pred)))) +
+  ggtitle("Random Forest training performance plot")
+
+```
+
+
+### Now let us use the model on the test data
+
+```{r}
+
+y_test_rf_pred <- predict(rf_model_final, x_test_rf)
+
+rf_rmse_test <- sqrt(mean(y_test_rf_pred - y_test_rf)^2)
+cat('RMSE:', rf_rmse_test)
+```
+
+```{r}
+
+ggplot() +
+  scale_x_continuous() + scale_y_continuous() +
+  aes(y = y_test_rf_pred, x = y_test_rf) +
+  geom_point() + geom_smooth(method = "lm") + xlab("Actual number of comments") + ylab("Predicted number of comments") +
+  geom_abline(slope = 1, intercept = 0) +
+  stat_poly_eq(
+    formula = y_test_rf_pred ~ y_test_rf,
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    parse = TRUE
+  ) +
+  coord_cartesian(ylim=c(0, max(c(y_test_rf, y_test_rf_pred))), xlim=c(0, max(c(y_test_rf, y_test_rf_pred)))) +
+  ggtitle("Random Forest test performance plot")
+
+```
+
+# Using log transformation on the response
+
+```{r}
+
+Target_Variable <- log(train_data[,41]+1)
+train_data_log <- cbind(train_data[,-41], Target_Variable)
+
+clusters <- makeCluster(detectCores()-2)
+registerDoParallel(clusters)
+
+rf_model_final_log <- randomForest(Target_Variable~., data = train_data_log, ntree = 20, mtry = 19)
+
+stopCluster(clusters)
+
+```
+
+
+```{r}
+
+y_train_rf_log_pred <- predict(rf_model_final_log, x_train_rf, type = 'response')
+y_train_rf_log <- Target_Variable
+
+rf_rmse_train_log <- sqrt(mean(y_train_rf_log_pred - y_train_rf)^2)
+cat('RMSE:', rf_rmse_train)
+
+rf_resid_log <- y_train_rf_log_pred - y_train_rf_log
+resid_plot_data <- as.data.frame(cbind(rf_resid_log, y_train_rf_log)) 
+ggplot() +
+  aes(x = y_train_rf_log, y = rf_resid_log) +
+  geom_point() + 
+  xlab("Log transformed fitted Values") +
+  ylab("Residuals") + 
+  ggtitle("Residuals Plot with log transformation")
+
+```
+
+```{r}
+ggplot() +
+  scale_x_continuous() + scale_y_continuous() +
+  aes(y = y_train_rf_log_pred, x = y_train_rf_log) +
+  geom_point() + geom_smooth(method = "lm") + xlab("log(Actual number of comments + 1)") + ylab("log(Predicted number of comments + 1)") +
+  geom_abline(slope = 1, intercept = 0) +
+  stat_poly_eq(
+    formula = y_train_rf_log_pred ~ y_train_rf_log,
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    parse = TRUE
+  ) +
+  coord_cartesian(ylim=c(0, max(c(y_train_rf_log_pred, y_train_rf_log))), xlim=c(0, max(c(y_train_rf_log_pred, y_train_rf_log)))) +
+  ggtitle("Random Forest with log transformation training performance plot")
+```
+
+
+
+```{r}
+Target_Variable <- log(test_data[,41]+1)
+test_data_log <- cbind(test_data[,-41], Target_Variable)
+
+
+y_test_rf_log_pred <- predict(rf_model_final_log, x_test_rf, type = 'response')
+y_test_rf_log <- Target_Variable
+
+
+rf_rmse_test_log <- sqrt(mean(y_test_rf_log_pred - y_test_rf_log)^2)
+cat('RMSE:', rf_rmse_test_log)
+```
+
+```{r}
+ggplot() +
+  scale_x_continuous() + scale_y_continuous() +
+  aes(y = y_test_rf_log_pred, x = y_test_rf_log) +
+  geom_point() + geom_smooth(method = "lm") + xlab("log(Actual number of comments + 1)") + ylab("log(Predicted number of comments + 1)") +
+  geom_abline(slope = 1, intercept = 0) +
+  stat_poly_eq(
+    formula = y_test_rf_log_pred ~ y_test_rf_log,
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    parse = TRUE
+  ) +
+  coord_cartesian(ylim=c(0, max(c(y_test_rf_log_pred, y_test_rf_log))), xlim=c(0, max(c(y_test_rf_log_pred, y_test_rf_log)))) +
+  ggtitle("Random Forest testing performance plot")
+```
+
+Retransforming the predicted values
+
+```{r}
+a <- as.data.frame(cbind((exp(y_test_rf_log_pred) - 1), (exp(y_test_rf_log) - 1)))
+ggplot() +
+  scale_x_continuous() + scale_y_continuous() +
+  aes(y = a$V1, x = a$V2) +
+  geom_point() + geom_smooth(method = "lm") + xlab("Actual number of comments") + ylab("Predicted number of comments") +
+  geom_abline(slope = 1, intercept = 0) +
+  stat_poly_eq(
+    formula = a$V1 ~ a$V2,
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    parse = TRUE
+  ) +
+  coord_cartesian(ylim=c(0, max(c(a$V1, a$V2))), xlim=c(0, max(c(a$V1, a$V2)))) +
+  ggtitle("Random Forest testing performance plot for retransformed values")
+```
+

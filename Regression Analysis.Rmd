@@ -1,0 +1,581 @@
+---
+title: "Regression Analysis"
+author: "Abhishek, Jackson, and Reynaldo"
+date: "5th December, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#Change the filnames as per your need
+test_data <- read.csv("Dataset/Testing/Features_TestSet.csv", header=F, sep =',')
+train_data <- read.csv("Dataset/Training/Features_Variant_1.csv", header=F, sep = ',')
+
+col_names <-
+  c(
+    'Page_Popularity',     'Page_Checkins',    'Page_Talking_About',
+    'Page_Category',    'Derived_1',     'Derived_2',    'Derived_3',
+    'Derived_4',    'Derived_5',    'Derived_6',    'Derived_7',
+    'Derived_8',    'Derived_9',    'Derived_10',     'Derived_11',
+    'Derived_12',    'Derived_13',    'Derived_14',    'Derived_15',
+    'Derived_16',    'Derived_17',    'Derived_18',    'Derived_19',
+    'Derived_20',    'Derived_21',    'Derived_22',    'Derived_23',
+    'Derived_24',    'Derived_25',    'CC1',    'CC2',
+    'CC3',    'CC4',    'CC5',    'Base_Time',
+    'Post_Length',     'Post_Share_Count',    'Post_Promotion_Status',     'H_Local',
+    'Post_Day_Sunday',    'Post_Day_Monday',    'Post_Day_Tuesday',    'Post_Day_Wednesday',
+    'Post_Day_Thursday',    'Post_Day_Friday',    'Post_Day_Saturday',    'Base_Day_Sunday',
+    'Base_Day_Monday',    'Base_Day_Tuesday',    'Base_Day_Wednesday',    'Base_Day_Thursday',
+    'Base_Day_Friday',    'Base_Day_Saturday',    'Target_Variable')
+
+colnames(test_data) <- col_names
+colnames(train_data) <- col_names
+
+
+#Condensing the Page Category
+page_category_group <- read.csv("page_category.csv", stringsAsFactors = FALSE, sep = '\t')
+
+train_data <- merge(train_data, page_category_group, by='Page_Category', all.x = TRUE)
+train_data$Page_Category <- as.factor(train_data$Group)
+train_data$Group <- NULL
+train_data <- train_data[, col_names]
+
+test_data <- merge(test_data, page_category_group, by='Page_Category', all.x = TRUE)
+test_data$Page_Category <- as.factor(test_data$Group)
+test_data$Group <- NULL
+test_data <- test_data[, col_names]
+
+
+#Converted the weekdays column to one column that tells if the post was made on a weekday
+
+train_data$Post_Day_Weekend <- as.factor(rowSums(train_data[, c(40,46)]))
+train_data$Base_Day_Weekend <- as.factor(rowSums(train_data[, c(47,53)]))
+
+test_data$Post_Day_Weekend <- as.factor(rowSums(test_data[, c(40,46)]))
+test_data$Base_Day_Weekend <- as.factor(rowSums(test_data[, c(47,53)]))
+
+train_data[, 40:53] <- NULL
+test_data[, 40:53] <- NULL
+
+
+#Dropping Post_promotion_Status as it contains only one type of data (means every post was promoted)
+train_data$Post_Promotion_Status <- NULL
+test_data$Post_Promotion_Status <- NULL
+
+#Rearranging columns to make the target the last column
+train_data <- train_data[ , c(1:38,40,41,39)]
+test_data <- test_data[ , c(1:38,40,41,39)]
+```
+
+Data: 
+
+
+
+
+#Exploratory Data Analysis: 
+
+First we check whether there are any null values in our data (test and training sets):
+
+```{r}
+na_count <-sapply(test_data, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+subset(na_count, na_count !=0)
+
+na_count <-sapply(train_data, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+subset(na_count, na_count !=0)
+```
+
+We see that our training set has no null values, while the testing set has 1 null value in the Page_Category column. Since it is only one row, we drop it. 
+
+```{r}
+test_data= na.omit(test_data)
+#train_data= na.omit(train_data)
+```
+
+The variable H_Local denotes the number of hours after a Facebook post was posted. This helps us normalize our target variable of Facebook post counts in order to get a comparable rate of Facebook posts/hr. We see below that the vast majority of our data (98.1%) was gathered in a time period of 24 hours after the Facebook post. 
+
+```{r}
+quantile(train_data$H_Local)
+print(100*nrow(subset(train_data, H_Local==24))/nrow(train_data))
+```
+
+Below we see that the a bit over half of Facebook posts recieve no comments at all. 
+
+```{r}
+quantile(train_data$Target_Variable/train_data$H_Local)
+print(nrow(subset(train_data, Target_Variable==0))/nrow(train_data))
+```
+
+And even within those posts that actually recieve a comment, the vast majority recieve less than one comment per hour. Thus, we are dealing with a response variable with a lot of 0 values and mostly small decimal values. 
+```{r}
+quantile(subset(train_data, Target_Variable!=0)$Target_Variable/subset(train_data, Target_Variable!=0)$H_Local)
+```
+
+```{r}
+hist(train_data$Target_Variable/train_data$H_Local, breaks= 20, main="Histogram for #FB Posts/Hour on a given Post", xlab="#FB Comments/Hr",)
+```
+
+Now I will check the correlation among our numerical variables. A few observations: Page_Talking_About is highly correlated (0.62) with Page_Popularity, and many of the Derived variables are very correlated with each other (some having correlations o 0.99). This means that variable selection will be essential before trying out any linear regression model. Interestingly, our target variable does not have any strong correlation with any of the other predictors, with all correlations magnitudes being less than 0.4. 
+
+
+
+```{r}
+temp = data.frame(train_data)
+temp$Target_Variable = temp$Target_Variable/temp$H_Local
+temp$H_Local = NULL
+nums <- unlist(lapply(temp, is.numeric)) 
+
+
+
+cor(temp[ , nums])
+```
+
+#Baseline Model
+
+```{r}
+mean(train_data$Target_Variable/train_data$H_Local)
+```
+
+As mentioned above, since some variables are so correlated we will not look at scatter plots and instead we will first try PCA regression:
+
+```{r}
+library(boot)
+library(dummies)
+predictors = temp[,-ncol(temp)]
+new <- dummy.data.frame(predictors, c("Page_Category", 'Post_Day_Weekend', 'Base_Day_Weekend'))
+new$Post_Day_Weekend0=NULL
+new$Base_Day_Weekend0=NULL
+pca = prcomp(new, scale = TRUE, center = TRUE)
+sum = c()
+for (i in 1:41){
+sum = c(sum, sum((pca$sdev[1:i])**2/sum((pca$sdev)**2))) }
+plot(sum, ylab = 'Total Variance Explained', xlab = '# of Principal Component', main = "Sum of Variance Explained")
+```
+
+```{r}
+set.seed(1)
+min_comp = 0
+min_dev = 90000000000
+for (i in 10:20){
+hi = cbind.data.frame(pca$x[, 1:i], train_data$H_Local,train_data$Target_Variable)
+colnames(hi)[colnames(hi)=="train_data$Target_Variable"] <- "Target_Variable"
+colnames(hi)[colnames(hi)=="train_data$H_Local"] <- "H_Local"
+model = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = hi) 
+dev = AIC(model, k=2)
+if (dev<min_dev){
+  min_dev = dev
+  min_comp = i
+}
+}
+hi = cbind.data.frame(pca$x[, 1:15], train_data$H_Local,train_data$Target_Variable)
+colnames(hi)[colnames(hi)=="train_data$Target_Variable"] <- "Target_Variable"
+colnames(hi)[colnames(hi)=="train_data$H_Local"] <- "H_Local"
+model = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = hi) 
+
+
+
+print(min_dev)
+print(min_comp)
+
+```
+
+```{r}
+hi = cbind.data.frame(pca$x[, 1:15], train_data$H_Local,train_data$Target_Variable)
+colnames(hi)[colnames(hi)=="train_data$Target_Variable"] <- "Target_Variable"
+colnames(hi)[colnames(hi)=="train_data$H_Local"] <- "H_Local"
+best_pca = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = hi)
+summary(best_pca)
+```
+
+```{r}
+#Function to get overdispersion parameter and Cook's distance plot 
+cooks<- function(model){
+   cook = cooks.distance(model)
+plot(cook, type="h", lwd=3, col="red", ylab = "Cook's Distance", main="Cook's Distance")
+  num_outliers = sum(cook>4/nrow(train_data))
+  percentage_outliers = num_outliers/nrow(train_data)
+  df_res = model$df.residual
+  res = model$residuals
+  overdispersion = sum(res**2)/df_res
+  return (percentage_outliers)
+}
+
+overdispersion<-function(model){
+  df_res = model$df.residual
+  res = model$residuals
+  overdispersion = sum(res**2)/df_res
+  return(overdispersion)
+}
+
+residual_plots <-function(model){
+  plot(y = model$residuals, x = model$fitted.values)
+  
+  
+}
+```
+
+```{r}
+#Function to get overdispersion parameter and Cook's distance plot 
+cooks<- function(model){
+   cook = cooks.distance(model)
+plot(cook, type="h", lwd=3, col="red", ylab = "Cook's Distance", main="Cook's Distance")
+  num_outliers = sum(cook>4/nrow(train_data))
+  percentage_outliers = num_outliers/nrow(train_data)
+  df_res = model$df.residual
+  res = rstandard(model)
+  overdispersion = sum(res**2)/df_res
+  return (percentage_outliers)
+}
+
+overdispersion<-function(model){
+  df_res = model$df.residual
+  res = rstandard(model)
+  overdispersion = sum(res**2)/df_res
+  return(overdispersion)
+}
+
+residual_plots <-function(model){
+  plot(y = rstandard(model), x = model$fitted.values)
+  qqnorm(rstandard(model))
+  qqline(rstandard(model))
+}
+
+get_AIC<- function(model){
+  return (AIC(model, k = 2))
+}
+
+get_BIC<- function(model){
+  BIC = AIC(model, k = log(nrow(train_data)))
+  return (BIC)
+}
+```
+
+Below, we see that 18% of our data set has an outsized effect on the model. We also have an overdispersion of 36.23, which is very overdispersed. There's also one big point that seems to be an outlier. I will investiage further:
+
+```{r}
+print(overdispersion(best_pca))
+print(get_AIC(best_pca))
+print(get_BIC(best_pca))
+```
+
+```{r}
+cooks(best_pca)
+```
+
+Below, we see that indeed the target variable for the biggest cook's distance point is 434 within a 24 hour period. I will delete this point and see if it improves our model. 
+```{r}
+cook = cooks.distance(best_pca)
+index1 = match(max(cook),cook)
+train_data[index1,]
+```
+
+Below, we see that our deviance decreases to 1219 when we delete the outlier. Overdispersion paramterer decreases slightly to 35.84. This is making our model more accurate, so let's see if deleting other potential outliers helps our model. 
+```{r}
+set.seed(1)
+t = data.frame(hi[-index1,])
+best_pca1 = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = t)
+cv<- cv.glm(t, best_pca1, K =10)
+dev = cv$delta[2]
+print(dev)
+print(overdispersion(best_pca1))
+print(get_AIC(best_pca1))
+print(get_BIC(best_pca1))
+```
+
+Now I try to delete Cook's points greater than 10 cook's distance. 
+```{r}
+set.seed(1)
+cook= cooks.distance(best_pca1)
+index2 = match(cook[cook>10], cook)
+t2 = data.frame(t[-index2,])
+best_pca2 = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = t2)
+cv<- cv.glm(t2, best_pca2, K =10)
+dev = cv$delta[2]
+print(dev)
+print(overdispersion(best_pca2))
+```
+
+Nope, eliminating these other points increases our deviance substantially and overdispersion decreases substantially to 32. Since deviance had such a high increase we go with pca_model1. Note that we don't delete all points that are greater than 4/#points because this is 18% of data, and 55% of data has 0 as target variable, so we would be eliminating a lot of valuable (non-0) information.  So our best model using PCA Regression is with 15 principal components and eliminating the row index1. 
+
+```{r}
+best_pca = best_pca1
+
+```
+
+```{r}
+#n = number of components 
+n = 15
+
+eigen_vectors = pca$rotation[,1:n]
+coefficients = as.matrix(best_pca$coefficients[1:n+1])
+
+#To get coefficients in terms of original variables, we matrix multiply principal componen
+new_coef = eigen_vectors%*%coefficients 
+pca_back <- rbind(Intercept = best_pca$coefficients[1], new_coef)
+```
+
+#Lasso Regression 
+
+Now we do Lasso Poisson Regression using all of our original variables without PCA: 
+
+```{r}
+library(glmnet)
+hi = cbind.data.frame(new, train_data$Target_Variable)
+colnames(hi)[colnames(hi)=="train_data$Target_Variable"] <- "Target_Variable"
+```
+
+
+```{r}
+model1 = cv.glmnet(x= as.matrix(hi[,1:41]),y = as.matrix(hi[,42]), offset = as.matrix(train_data$H_Local), family = 'poisson', alpha = 1, nfolds = 10)
+```
+
+```{r}
+ideal_lambda = model1$lambda.min
+print(ideal_lambda)
+print(min(model1$cvm))
+```
+
+```{r}
+coef = coef(model1,model1$lambda.min)
+coef
+```
+
+```{r}
+lasso = data.frame(hi[,c('Page_Talking_About', 'Page_CategoryBusiness', 'Page_CategoryEntertainment', 'Derived_1', 'Derived_2', 'Derived_5', 'Derived_10', 'Derived_12', 'Derived_14', 'Derived_21',  'Derived_22', 'Derived_25', 'CC1', 'CC2', 'Base_Time', 'Post_Share_Count')])
+lasso = cbind.data.frame(lasso, train_data$H_Local,train_data$Target_Variable)
+colnames(lasso)[colnames(lasso)=="train_data$Target_Variable"] <- "Target_Variable"
+colnames(lasso)[colnames(lasso)=="train_data$H_Local"] <- "H_Local"
+model = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = lasso)
+cv<- cv.glm(lasso, model, K =10)
+dev = cv$delta[2]
+print(dev)
+summary(model)
+```
+
+```{r}
+library(CombMSC)
+s2 <- sigma(model)
+#Mallow's Cp
+Cp(model, S2 = (s2 ^ 2))
+#AIC
+AIC(model, k = 2)
+#BIC
+AIC(model, k = log(nrow(train_data)))
+```
+
+```{r}
+jpeg("LASSO_cook.jpg")
+cooks(model)
+dev.off()
+cook= cooks.distance(model)
+index2 = match(cook[cook>10], cook)
+
+
+lasso_final = glm(Target_Variable~. - H_Local + offset(log(H_Local)), family = 'poisson', data = lasso[-index2,])
+
+lasso_cv_final<- cv.glmnet(x= as.matrix(hi[,1:41]),y = as.matrix(hi[,42]), alpha=1, nfolds =10)
+dev = lasso_cv_final$delta[2]
+print(dev)
+summary(model)
+s2 <- sigma(lasso_final)
+#Mallow's Cp
+Cp(lasso_final, S2 = (s2 ^ 2))
+#AIC
+AIC(lasso_final, k = 2)
+#BIC
+AIC(lasso_final, k = log(nrow(train_data)))
+```
+
+```{r}
+numerical = data.frame(hi[,-c(4, 5, 6, 40, 41)])
+scaled = scale(numerical, center = TRUE)
+final = cbind.data.frame(scaled, new[, c(4, 5, 6, 40, 41)], train_data$H_Local)
+colnames(final)[colnames(final)=="train_data$H_Local"] <- "H_Local"
+
+lasso = data.frame(final[,c('Page_Talking_About', 'Page_CategoryBusiness', 'Page_CategoryEntertainment', 'Derived_1', 'Derived_2', 'Derived_5', 'Derived_10', 'Derived_12', 'Derived_14', 'Derived_21',  'Derived_22', 'Derived_25', 'CC1', 'CC2', 'Base_Time', 'Post_Share_Count', 'Target_Variable', 'H_Local')])
+lasso_final2 = glmnet(x= as.matrix(final),y = as.matrix(train_data$Target_Variable), offset = as.matrix(train_data$H_Local), family = 'poisson', alpha = 1, standardize = FALSE, nlambda = 100)
+
+jpeg("Lasso_coef.jpg")
+plot(lasso_final2,xvar="lambda", label=TRUE)
+abline(v=log(lasso_cv_final$lambda.min),col='black',lty = 2)
+dev.off()
+coef(lasso_final2,s=lasso_cv_final$lambda.min)
+```
+
+The test for overall regression shows that at least one predicting variable significantly explains the variability in our model:
+```{r}
+1-pchisq((1329896-46128),(40948-40932))
+```
+
+# Not including Elastic Net code so it can potentially knit, elastic net would not finish running
+
+
+# Fitting a GLM model
+```{r}
+model1 <- glm(Target_Variable ~ ., data = train_data)
+summary(model1)
+```
+
+# Performing CV for GLM model
+```{r}
+library(boot)
+loocv.model1 = cv.glm(data = train_data, glmfit = model1, K = 10)
+loocv.model1$delta[1]
+```
+
+# Cp, AIC, BIC for the complete model
+
+```{r}
+library(CombMSC)
+s2 <- sigma(model1)
+#Mallow's Cp
+Cp(model1, S2 = (s2 ^ 2))
+#AIC
+AIC(model1, k = 2)
+#BIC
+AIC(model1, k = log(nrow(train_data)))
+```
+
+# Performing variable selection using forward stepwise regression
+
+```{r eval=FALSE, include=FALSE}
+reduced_model <- glm(Target_Variable ~ 1, data = hi)
+complete_model <- glm(Target_Variable~., data=hi)
+forward_backward_stepwise_regression <- step(
+  reduced_model,
+  scope = list(reduced_model, upper = complete_model),
+  direction = "forward",
+  trace = 'F'
+  )
+```
+
+
+# Making the model using forward stepwise regression
+
+```{r}
+forward_stepwise_regression <- 
+  glm(formula = Target_Variable ~ CC2 + Base_Time + Derived_3 + 
+    CC4 + Derived_18 + Post_Share_Count + Derived_8 + Page_Talking_About + 
+    Derived_1 + CC3 + Derived_9 + Derived_12 + Derived_14 + Derived_6 + 
+    Derived_16 + CC1 + Derived_19 + Derived_15 + Derived_4 + 
+    Derived_7 + Derived_13 + Derived_20 + Page_Checkins, data = hi)
+
+summary(forward_stepwise_regression)
+```
+
+```{r}
+jpeg("Forward_Cooks.jpeg")
+cooks(forward_stepwise_regression)
+dev.off()
+cook = cooks.distance(forward_stepwise_regression)
+index1 = match(cook[cook > 4/nrow(hi)],cook)
+index2 = match(cook[cook > 10],cook)
+
+forward_stepwise_regression <- glm(formula = Target_Variable ~ CC2 + Base_Time + Derived_3 + 
+    CC4 + Derived_18 + Post_Share_Count + Derived_8 + Page_Talking_About + 
+    Derived_1 + CC3 + Derived_9 + Derived_12 + Derived_14 + Derived_6 + 
+    Derived_16 + CC1 + Derived_19 + Derived_15 + Derived_4 + 
+    Derived_7 + Derived_13 + Derived_20 + Page_Checkins, data = hi[-index2,])
+```
+```{r}
+coef(forward_backward_stepwise_regression)
+```
+
+```{r}
+library(CombMSC)
+s2 <- sigma(forward_stepwise_regression)
+#Mallow's Cp
+Cp(forward_stepwise_regression, S2 = (s2 ^ 2))
+#AIC
+AIC(forward_stepwise_regression, k = 2)
+#BIC
+AIC(forward_stepwise_regression, k = log(nrow(train_data)))
+```
+
+```{r}
+do_plots <- function(model, string){
+res = residuals(model, type = 'deviance')
+
+names = colnames(hi)
+for (name in names) {
+  jpeg(paste(name, string, '.jpg'))
+  plot(hi[[name]], log(model$fitted), ylab='Fitted Response', xlab = name)
+  dev.off()
+}
+
+
+
+
+# abline(0,0,col="blue",lwd=2)
+# boxplot(res~prog,ylab = "Std residuals")
+jpeg(paste(string, 'QQplot.jpg'))
+qqnorm(res, ylab="Std residuals")
+qqline(res,col="blue",lwd=2)
+dev.off()
+jpeg(paste(string, 'Residuals.jpg'))
+hist(res,10,xlab="Std residuals", main="")
+dev.off()
+}
+
+#do_plots(best_pca, 'PCA')
+```
+
+
+```{r}
+deviance <- function(model){
+  deviance_res = 1-pchisq(model$deviance,model$df.residual)
+  print(deviance_res)
+}
+deviance(lasso_final)
+deviance(forward_backward_stepwise_regression)
+deviance(best_pca)
+```
+
+```{r}
+temp = data.frame(test_data)
+temp$Target_Variable = temp$Target_Variable/temp$H_Local
+temp$H_Local = NULL
+nums <- unlist(lapply(temp, is.numeric)) 
+
+predictors = temp[,-ncol(temp)]
+new <- dummy.data.frame(predictors, c("Page_Category", 'Post_Day_Weekend', 'Base_Day_Weekend'))
+new$Post_Day_Weekend0=NULL
+new$Base_Day_Weekend0=NULL
+final_test = cbind.data.frame(new, test_data$Target_Variable)
+colnames(final_test)[colnames(final_test)=="train_data$Target_Variable"] <- "Target_Variable"
+
+numerical = data.frame(final_test[,-c(4, 5, 6, 40, 41)])
+scaled = scale(numerical, center = TRUE)
+final_test_scaled = cbind.data.frame(scaled, final_test[, c(4, 5, 6, 40, 41)])
+
+```
+
+```{r}
+lasso_predictions <- predict(lasso_cv_final, data.matrix(final_test[, -41]), type= 'response')
+stepwise_predictions <- predict(forward_backward_stepwise_regression, final_test[, -41], type='response')
+
+pca_predictions <- (as.matrix(final_test_scaled[,-41]) %*%new_coef + best_pca$coefficients[1])
+y_true = final_test[,41]
+sqrt(mean((y_true - lasso_predictions)^2))
+sqrt(mean((y_true - stepwise_predictions)^2))
+
+sqrt(mean((y_true - pca_predictions)^2))
+
+```
+
+```{r}
+#Getting model with minimum lambda
+lasso_cv_final$lambda.min
+
+plot(lasso_final, xvar = 'lambda')
+abline(
+  v = log(lasso_model_cv$lambda.min),
+  col = 'red',
+  lty = 2
+)
+```
